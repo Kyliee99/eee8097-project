@@ -25,41 +25,90 @@ from common import (
 )
 
 
-BOOLEAN_THRESHOLDS = (-0.5, 0.0, 0.5)
+BOOLEAN_THRESHOLDS = (0,5,)
 
-NUM_CLAUSES = 500
-T_THRESHOLD = 250
-S_SPECIFICITY = 5.0
+NUM_CLAUSES = 300
+T_THRESHOLD = 150
+S_SPECIFICITY = 3.0
 PATCH_DIM = (4, 4)
-MAX_INCLUDED_LITERALS = 48
+MAX_INCLUDED_LITERALS = 32
 WEIGHTED_CLAUSES = True
 
-EPOCHS = 30
-PATIENCE = 5
+EPOCHS = 25
+PATIENCE = 6
 PLATFORM = "CPU"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "tsetlin_output"
-MODEL_PATH = OUTPUT_DIR / "best_tsetlin_rgbd.pkl"
-METRICS_PATH = OUTPUT_DIR / "training_metrics.json"
+MODEL_PATH = OUTPUT_DIR / "best_tsetlin_rgbd_rgb2.pkl"
+METRICS_PATH = OUTPUT_DIR / "training_metrics_rgb2.json"
 
 
 def tensor_to_boolean(images: torch.Tensor) -> np.ndarray:
-    """[B,1,32,32] 浮点 Tensor -> [B,32,32,3] Boolean uint32。"""
-    if images.ndim != 4 or images.shape[1] != 1:
+    """
+    RGB Tensor转换为Tsetlin Boolean输入。
+
+    输入：
+        [B, 3, H, W]
+        像素范围：[0, 1]
+
+    输出：
+        [B, H, W, 6]
+
+    六个Boolean通道分别为：
+        R > 0.33
+        R > 0.66
+        G > 0.33
+        G > 0.66
+        B > 0.33
+        B > 0.66
+    """
+
+    if images.ndim != 4:
         raise ValueError(
-            f"输入应为 [B,1,H,W]，当前为 {tuple(images.shape)}"
+            f"输入应为四维[B,C,H,W]，当前为{tuple(images.shape)}"
         )
 
-    boolean_planes = [
-        (images > threshold).to(torch.uint32)
-        for threshold in BOOLEAN_THRESHOLDS
-    ]
+    if images.shape[1] != 3:
+        raise ValueError(
+            f"输入应为RGB三通道，当前通道数为{images.shape[1]}"
+        )
 
-    boolean_tensor = torch.cat(boolean_planes, dim=1)
-    boolean_tensor = boolean_tensor.permute(0, 2, 3, 1).contiguous()
+    boolean_planes = []
 
-    return boolean_tensor.cpu().numpy()
+    # 分别处理R、G、B三个通道
+    for channel_index in range(3):
+
+        channel = images[
+            :,
+            channel_index:channel_index + 1,
+            :,
+            :,
+        ]
+
+        for threshold in BOOLEAN_THRESHOLDS:
+            boolean_planes.append(
+                (channel > threshold).to(torch.uint32)
+            )
+
+    # [B,6,H,W]
+    boolean_tensor = torch.cat(
+        boolean_planes,
+        dim=1,
+    )
+
+    # TMU需要[B,H,W,C]
+    boolean_tensor = boolean_tensor.permute(
+        0,
+        2,
+        3,
+        1,
+    ).contiguous()
+
+    return boolean_tensor.cpu().numpy().astype(
+        np.uint32,
+        copy=False,
+    )
 
 
 def dataloader_to_numpy(
@@ -89,7 +138,24 @@ def dataloader_to_numpy(
         np.ascontiguousarray(X, dtype=np.uint32),
         np.ascontiguousarray(y, dtype=np.uint32),
     )
+def print_class_counts(
+    labels: np.ndarray,
+    class_names: list[str],
+    split_name: str,
+) -> None:
+    counts = np.bincount(
+        labels,
+        minlength=len(class_names),
+    )
 
+    print(f"\n{split_name} class distribution")
+    print("-" * 40)
+
+    for class_name, count in zip(
+        class_names,
+        counts,
+    ):
+        print(f"{class_name:<15}: {count}")
 
 def save_checkpoint(
     model,
@@ -120,11 +186,44 @@ def main() -> None:
     set_seed()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    trainloader, valloader, testloader, class_names = create_dataloaders()
+    trainloader, valloader, testloader, class_names = (
+        create_dataloaders(
+            input_mode="rgb"
+        )
+    )
 
     X_train, y_train = dataloader_to_numpy(trainloader, "training set")
     X_val, y_val = dataloader_to_numpy(valloader, "validation set")
     X_test, y_test = dataloader_to_numpy(testloader, "test set")
+
+    print_class_counts(
+        y_train,
+        class_names,
+        "Training set",
+    )
+
+    print_class_counts(
+        y_val,
+        class_names,
+        "Validation set",
+    )
+
+    print_class_counts(
+        y_test,
+        class_names,
+        "Test set",
+    )
+
+    print("\nTsetlin input shapes")
+    print("-" * 40)
+    print("X_train:", X_train.shape)
+    print("X_val:", X_val.shape)
+    print("X_test:", X_test.shape)
+
+    print(
+        "Unique Boolean values:",
+        np.unique(X_train),
+    )
 
     model = TMClassifier(
         number_of_clauses=NUM_CLAUSES,
@@ -178,6 +277,25 @@ def main() -> None:
         checkpoint = pickle.load(file)
 
     best_model = checkpoint["model"]
+
+    print("\nEvaluating training set...")
+
+    train_predictions = best_model.predict(X_train)
+
+    train_accuracy = float(
+        np.mean(train_predictions == y_train) * 100.0
+    )
+
+    final_val_predictions = best_model.predict(X_val)
+
+    final_val_accuracy = float(
+        np.mean(final_val_predictions == y_val) * 100.0
+    )
+
+    print("\nFinal split accuracy")
+    print("-" * 40)
+    print(f"Train accuracy: {train_accuracy:.2f}%")
+    print(f"Validation accuracy: {final_val_accuracy:.2f}%")
 
     test_start = time.perf_counter()
     test_predictions = best_model.predict(X_test)
