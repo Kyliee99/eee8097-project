@@ -39,7 +39,7 @@ PATIENCE = 5
 PLATFORM = "CPU"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = SCRIPT_DIR / "tsetlin_output"
+OUTPUT_DIR = SCRIPT_DIR / "models" /"tsetlin_output"
 MODEL_PATH = OUTPUT_DIR / "best_tsetlin_rgbd.pkl"
 METRICS_PATH = OUTPUT_DIR / "training_metrics.json"
 
