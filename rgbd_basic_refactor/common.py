@@ -56,20 +56,59 @@ def get_device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def build_transform(image_size: int = IMAGE_SIZE) -> transforms.Compose:
-    """RGB -> 灰度 -> 32×32 -> Tensor -> [-1, 1]。"""
-    return transforms.Compose([
-        transforms.Grayscale(num_output_channels=1),
-        transforms.Resize((image_size, image_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=(0.5,), std=(0.5,)),
-    ])
+def build_transform(
+    image_size: int = IMAGE_SIZE,
+    input_mode: str = "grayscale",
+) -> transforms.Compose:
+    """
+    根据模型选择图像预处理。
 
+    grayscale:
+        用于 MLP 和 BNN
+        RGB -> 灰度 -> Resize -> Tensor -> [-1, 1]
+        输出：[1, H, W]
+
+    rgb:
+        用于 Tsetlin Machine
+        RGB -> Resize -> Tensor
+        输出：[3, H, W]，像素范围 [0, 1]
+    """
+
+    if input_mode == "grayscale":
+        return transforms.Compose([
+            transforms.Grayscale(
+                num_output_channels=1
+            ),
+            transforms.Resize((
+                image_size,
+                image_size,
+            )),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=(0.5,),
+                std=(0.5,),
+            ),
+        ])
+
+    if input_mode == "rgb":
+        return transforms.Compose([
+            transforms.Resize((
+                image_size,
+                image_size,
+            )),
+            transforms.ToTensor(),
+        ])
+
+    raise ValueError(
+        "input_mode 必须是 'grayscale' 或 'rgb'，"
+        f"当前值为：{input_mode}"
+    )
 
 def create_dataloaders(
     dataset_root: Path = DATASET_ROOT,
     batch_size: int = BATCH_SIZE,
     image_size: int = IMAGE_SIZE,
+    input_mode: str = "grayscale",
 ) -> tuple[DataLoader, DataLoader, DataLoader, list[str]]:
     """创建三种算法共用的 train / val / test DataLoader。"""
     if not dataset_root.exists():
@@ -77,7 +116,7 @@ def create_dataloaders(
             f"找不到数据集目录：{dataset_root.resolve()}"
         )
 
-    transform = build_transform(image_size)
+    transform = build_transform(image_size=image_size, input_mode=input_mode, )
 
     train_dataset = RGBDObjectDataset(
         root_dir=str(dataset_root),
