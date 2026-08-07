@@ -1,0 +1,66 @@
+project:
+  seed: 42
+  data_root: data/rgbd-dataset_eval
+  artifacts_root: artifacts
+
+data:
+  image_size: 32
+  batch_size: 32
+  num_workers: 0
+  # Collect every RGB sample under each class, shuffle individual files, then
+  # allocate 70%/15%/15%. Instance-directory names do not control the split.
+  split_unit: image
+  split_ratios:
+    train: 0.70
+    val: 0.15
+    test: 0.15
+  manifest_path: artifacts/split_manifest.json
+
+preprocessing:
+  input_mode: grayscale      # final comparison uses the same grayscale input for every model
+  normalize_mean: [0.5]
+  normalize_std: [0.5]
+  tsetlin_thresholds: [-0.5, 0.0, 0.5]
+
+models:
+  hidden_sizes: [512, 256, 128]
+  mlp_checkpoint: artifacts/models/rgbd_mlp_2.pth
+  bnn_checkpoint: artifacts/models/rgbd_bnn_2.pth
+  tsetlin_checkpoint: artifacts/models/best_tsetlin_rgbd.pkl
+  tsetlin:
+    clauses: 200
+    threshold: 150
+    specificity: 3.0
+    patch_dim: [6, 6]
+    max_included_literals: 24
+    weighted_clauses: true
+    platform: CPU
+
+training:
+  mlp:
+    epochs: 30
+    patience: 5
+    learning_rate: 0.001
+    weight_decay: 0.0001
+  bnn:
+    epochs: 50
+    patience: 5
+    learning_rate: 0.0005
+    weight_decay: 0.0
+  tsetlin:
+    epochs: 25
+    patience: 5
+
+evaluation:
+  models: [mlp, bnn, bnn_xnor, tsetlin]
+  device: cpu
+  warmup_runs: 1
+  timed_repeats: 5
+  xnor_word_bits: 64
+  output_dir: artifacts/results
+  # ACEv2 is a hardware-agnostic arithmetic-cost proxy, not joules.
+  # Set ace_unit_pj only when a documented hardware calibration is available.
+  energy:
+    ace_unit_pj: null
+    logic_op_pj: null
+    vote_add_pj: null

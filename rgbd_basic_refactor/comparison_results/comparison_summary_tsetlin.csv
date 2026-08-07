@@ -1,2 +1,0 @@
-﻿model,operation,accuracy,precision,recall,f1,total_time,time_per_image,throughput_images_per_second,total_parameters,matrix_weights,model_file_size_mb,theoretical_weight_size_mb,列1,列2
-Tsetlin,Clause-based Boolean inference,0.930885529,0.936813265,0.930885529,0.932100689,9.3709715,0.00674656,148.2236927,,,20.87360668,,,

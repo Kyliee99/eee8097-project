@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.idea/
+.vscode/
+.venv/
+venv/
+/data/
+artifacts/split_manifest.json
+artifacts/results/*
+!artifacts/results/.gitkeep
+*.log
+.DS_Store
+Thumbs.db
