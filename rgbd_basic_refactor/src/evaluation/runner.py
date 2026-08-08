@@ -12,11 +12,13 @@ from src.data.loaders import create_dataloaders, set_seed
 from src.data.preprocessing import tensor_batches_to_boolean
 from src.data.split import build_or_load_manifest
 from src.evaluation.acev2 import (
+    calculate_tsetlin_extended_acev2,
     dense_layer_pairs,
     estimate_energy,
+    extract_trained_clause_profile,
     model_acev2_profiles,
     packed_xnor_word_operations,
-    tsetlin_logic_cost,
+    patch_traversal_report,
 )
 from src.evaluation.exporters import export_results
 from src.evaluation.metrics import classification_metrics
@@ -188,11 +190,66 @@ def evaluate_models(config: dict, project_root: Path, selected_models: list[str]
         )
         tm_cfg = config["models"]["tsetlin"]
         patch_dim = tuple(metadata.get("patch_dim", tm_cfg["patch_dim"]))
-        clauses = int(metadata.get("number_of_clauses", metadata.get("clauses", tm_cfg["clauses"])))
-        cost = tsetlin_logic_cost(
-            (image_size, image_size), x_test.shape[-1], patch_dim, len(class_names), clauses,
-            int(metadata.get("max_included_literals", tm_cfg["max_included_literals"])),
-            bool(metadata.get("weighted_clauses", tm_cfg.get("weighted_clauses", True))),
+        clause_profile = extract_trained_clause_profile(model)
+        if clause_profile is not None and clause_profile["class_count"] != len(class_names):
+            raise RuntimeError(
+                "Tsetlin Clause Bank class count does not match the split manifest: "
+                f"{clause_profile['class_count']} != {len(class_names)}"
+            )
+        clauses = int(
+            clause_profile["clauses_per_class"]
+            if clause_profile is not None
+            else metadata.get("number_of_clauses", metadata.get("clauses", tm_cfg["clauses"]))
+        )
+        flat_clause_lengths = (
+            list(clause_profile["_flat_lengths"])
+            if clause_profile is not None
+            else None
+        )
+        public_clause_profile = (
+            {key: value for key, value in clause_profile.items() if key != "_flat_lengths"}
+            if clause_profile is not None
+            else None
+        )
+        traversal = patch_traversal_report(model, public_clause_profile)
+        cost = calculate_tsetlin_extended_acev2(
+            image_shape=(image_size, image_size),
+            boolean_channels=int(x_test.shape[-1]),
+            patch_dim=(int(patch_dim[0]), int(patch_dim[1])),
+            class_count=len(class_names),
+            clauses_per_class=clauses,
+            max_included_literals=int(
+                metadata.get("max_included_literals", tm_cfg["max_included_literals"])
+            ),
+            weighted_clauses=bool(
+                metadata.get("weighted_clauses", tm_cfg.get("weighted_clauses", True))
+            ),
+            accumulator_bits=int(
+                metadata.get(
+                    "vote_accumulator_bits",
+                    evaluation_cfg.get("tsetlin_accumulator_bits", 32),
+                )
+            ),
+            weight_bits=int(
+                metadata.get(
+                    "clause_weight_bits",
+                    evaluation_cfg.get("tsetlin_weight_bits", 32),
+                )
+            ),
+            logic_gate_fae=float(evaluation_cfg.get("tsetlin_logic_gate_fae", 0.2)),
+            trained_clause_lengths=flat_clause_lengths,
+            model_patch_count=(
+                int(public_clause_profile["model_number_of_patches"])
+                if public_clause_profile is not None
+                else None
+            ),
+        )
+        cost["trained_clause_profile"] = public_clause_profile
+        cost["patch_evaluation"] = traversal
+        cost["clause_lengths_source"] = (
+            "trained Tsetlin Automata include actions"
+            if public_clause_profile is not None
+            else "unavailable; configured upper bound used"
         )
         results.append({
             "model": "tsetlin",
