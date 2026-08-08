@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
-from typing import Iterable
+from collections import Counter
+from statistics import fmean, median
+from typing import Any, Iterable
 
 
 def mac_cost(count: int, activation_bits: int, weight_bits: int) -> int:
@@ -96,33 +98,267 @@ def packed_xnor_word_operations(layers: list[tuple[int, int]], word_bits: int = 
     return sum(math.ceil(inputs / word_bits) * outputs for inputs, outputs in selected)
 
 
-def tsetlin_logic_cost(
+def _summarize_clause_lengths(lengths: list[int]) -> dict[str, Any]:
+    if not lengths:
+        raise ValueError("Clause-length list must not be empty")
+    histogram = Counter(map(int, lengths))
+    return {
+        "clause_count": len(lengths),
+        "included_literals_total": int(sum(lengths)),
+        "included_literals_min": int(min(lengths)),
+        "included_literals_mean": float(fmean(lengths)),
+        "included_literals_median": float(median(lengths)),
+        "included_literals_max": int(max(lengths)),
+        "empty_clause_count": int(sum(value == 0 for value in lengths)),
+        "nonempty_clause_count": int(sum(value > 0 for value in lengths)),
+        "length_histogram": {
+            str(length): int(count)
+            for length, count in sorted(histogram.items())
+        },
+    }
+
+
+def extract_trained_clause_profile(model: object | None) -> dict[str, Any] | None:
+    """Read the real include actions from every class-specific TMU Clause Bank."""
+    if model is None:
+        return None
+    container = getattr(model, "clause_banks", None)
+    if container is None:
+        return None
+
+    classes_method = getattr(container, "classes", None)
+    class_ids = list(classes_method()) if callable(classes_method) else list(container)
+    if not class_ids:
+        return None
+
+    all_lengths: list[int] = []
+    per_class: dict[str, Any] = {}
+    bank_types: set[str] = set()
+    patch_counts: set[int] = set()
+    clause_counts: set[int] = set()
+    incremental_flags: set[bool] = set()
+
+    for class_id in class_ids:
+        bank = container[class_id]
+        bank_types.add(f"{bank.__class__.__module__}.{bank.__class__.__name__}")
+        patch_counts.add(int(getattr(bank, "number_of_patches")))
+        clause_count = int(getattr(bank, "number_of_clauses"))
+        clause_counts.add(clause_count)
+        incremental_flags.add(
+            bool(getattr(bank, "incremental", getattr(model, "incremental", False)))
+        )
+
+        include_count = getattr(bank, "number_of_include_actions", None)
+        if callable(include_count):
+            lengths = [int(include_count(clause)) for clause in range(clause_count)]
+            extraction_method = "ClauseBank.number_of_include_actions"
+        else:
+            get_literals = getattr(bank, "get_literals", None)
+            if not callable(get_literals):
+                raise RuntimeError(
+                    f"Clause Bank for class {class_id} exposes neither "
+                    "number_of_include_actions() nor get_literals()."
+                )
+            literal_matrix = get_literals()
+            lengths = [int(sum(int(value) for value in row)) for row in literal_matrix]
+            extraction_method = "ClauseBank.get_literals"
+
+        all_lengths.extend(lengths)
+        per_class[str(class_id)] = {
+            **_summarize_clause_lengths(lengths),
+            "extraction_method": extraction_method,
+        }
+
+    if len(patch_counts) != 1:
+        raise RuntimeError(f"Class-specific Clause Banks disagree on patch count: {patch_counts}")
+    if len(clause_counts) != 1:
+        raise RuntimeError(f"Class-specific Clause Banks disagree on Clause count: {clause_counts}")
+
+    return {
+        **_summarize_clause_lengths(all_lengths),
+        "class_count": len(class_ids),
+        "clauses_per_class": next(iter(clause_counts)),
+        "model_number_of_patches": next(iter(patch_counts)),
+        "bank_types": sorted(bank_types),
+        "incremental_flags": sorted(incremental_flags),
+        "per_class": per_class,
+        "_flat_lengths": all_lengths,
+    }
+
+
+def patch_traversal_report(
+    model: object | None,
+    clause_profile: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Report whether the loaded TMU backend visits every patch during prediction."""
+    if model is None or clause_profile is None:
+        return {
+            "status": "unavailable: checkpoint model was not loaded",
+            "all_patches_visited": None,
+        }
+
+    platform = str(getattr(model, "platform", "unknown")).upper()
+    incremental_flags = clause_profile["incremental_flags"]
+    incremental = incremental_flags == [True]
+    dense_cpu = (
+        platform == "CPU"
+        and all(bank_type.endswith(".ClauseBank") for bank_type in clause_profile["bank_types"])
+    )
+    patches = int(clause_profile["model_number_of_patches"])
+    classes = int(clause_profile["class_count"])
+    clauses = int(clause_profile["clauses_per_class"])
+
+    if dense_cpu and incremental:
+        return {
+            "status": "confirmed from loaded model mode and TMU dense CPU incremental control flow",
+            "platform": platform,
+            "backend": clause_profile["bank_types"],
+            "incremental": True,
+            "all_patches_visited": True,
+            "patches_available_per_class_per_image": patches,
+            "patches_visited_per_class_per_image": patches,
+            "class_patch_visits_per_image": classes * patches,
+            "clause_patch_checks_per_image": classes * clauses * patches,
+            "early_exit_across_patches": False,
+        }
+
+    if dense_cpu and incremental_flags == [False]:
+        return {
+            "status": (
+                "dynamic: dense CPU non-incremental prediction can stop after the first "
+                "satisfying patch; TMU C-level counters are required for an exact mean"
+            ),
+            "platform": platform,
+            "backend": clause_profile["bank_types"],
+            "incremental": False,
+            "all_patches_visited": None,
+            "patches_available_per_class_per_image": patches,
+            "patches_visited_per_class_per_image": None,
+            "early_exit_across_patches": True,
+        }
+
+    return {
+        "status": "unknown for this TMU platform/backend; C/CUDA instrumentation is required",
+        "platform": platform,
+        "backend": clause_profile["bank_types"],
+        "incremental": incremental_flags,
+        "all_patches_visited": None,
+        "patches_available_per_class_per_image": patches,
+        "patches_visited_per_class_per_image": None,
+    }
+
+
+def calculate_tsetlin_extended_acev2(
+    *,
     image_shape: tuple[int, int],
     boolean_channels: int,
     patch_dim: tuple[int, int],
     class_count: int,
     clauses_per_class: int,
-    max_included_literals: int | None,
+    max_included_literals: int,
     weighted_clauses: bool = True,
-) -> dict:
+    accumulator_bits: int = 32,
+    weight_bits: int = 32,
+    logic_gate_fae: float = 0.2,
+    trained_clause_lengths: list[int] | None = None,
+    model_patch_count: int | None = None,
+) -> dict[str, Any]:
+    """Calculate the explicit full-adder-equivalent ACEv2 extension for a TM."""
     height, width = map(int, image_shape)
     patch_height, patch_width = map(int, patch_dim)
-    if patch_height > height or patch_width > width or min(patch_height, patch_width) <= 0:
-        raise ValueError("patch_dim must fit inside image_shape")
+    positive_values = {
+        "image height": height,
+        "image width": width,
+        "Boolean channels": boolean_channels,
+        "class count": class_count,
+        "clauses per class": clauses_per_class,
+        "max included literals": max_included_literals,
+        "accumulator bits": accumulator_bits,
+        "weight bits": weight_bits,
+    }
+    invalid = [name for name, value in positive_values.items() if int(value) <= 0]
+    if invalid:
+        raise ValueError(f"These values must be positive: {', '.join(invalid)}")
+    if min(patch_height, patch_width) <= 0 or patch_height > height or patch_width > width:
+        raise ValueError("patch dimensions must be positive and fit inside the image")
+    if logic_gate_fae < 0:
+        raise ValueError("logic_gate_fae must be non-negative")
+
     patches = (height - patch_height + 1) * (width - patch_width + 1)
+    if model_patch_count is not None and int(model_patch_count) != patches:
+        raise ValueError(
+            "Checkpoint Clause Bank patch count does not match image/patch configuration: "
+            f"{model_patch_count} != {patches}"
+        )
     features_per_patch = patch_height * patch_width * int(boolean_channels)
     available_literals = 2 * features_per_patch
-    included_literals = min(available_literals, int(max_included_literals)) if max_included_literals else available_literals
+    included_literals = min(available_literals, int(max_included_literals))
     clause_count = int(class_count) * int(clauses_per_class)
-    # Negations can be generated once and shared. Clause AND and patch OR are worst-case bounds.
-    input_negations = patches * features_per_patch
+
+    # Negations are generated once per Boolean image and shared by all patches.
+    input_negations = height * width * int(boolean_channels)
     clause_and = clause_count * patches * max(included_literals - 1, 0)
     patch_or = clause_count * max(patches - 1, 0)
+    boolean_gate_ops = input_negations + clause_and + patch_or
+    boolean_logic_fae = boolean_gate_ops * float(logic_gate_fae)
     vote_additions = int(class_count) * max(int(clauses_per_class) - 1, 0)
+    vote_acev2 = vote_additions * int(accumulator_bits)
+    weighted_selection_muxes = clause_count * int(weight_bits) if weighted_clauses else 0
+    weighted_selection_fae = weighted_selection_muxes * float(logic_gate_fae)
+    extended_upper = boolean_logic_fae + vote_acev2 + weighted_selection_fae
+
+    trained_cost: dict[str, Any] | None = None
+    if trained_clause_lengths is not None:
+        lengths = list(map(int, trained_clause_lengths))
+        if len(lengths) != clause_count:
+            raise ValueError(
+                "Actual Clause-length count does not match class_count * clauses_per_class: "
+                f"{len(lengths)} != {clause_count}"
+            )
+        if min(lengths, default=0) < 0 or max(lengths, default=0) > available_literals:
+            raise ValueError("Actual Clause lengths fall outside the available-literal range")
+        nonempty_clauses = sum(length > 0 for length in lengths)
+        trained_and = patches * sum(max(length - 1, 0) for length in lengths)
+        trained_or = nonempty_clauses * max(patches - 1, 0)
+        trained_gate_ops = input_negations + trained_and + trained_or
+        trained_logic_fae = trained_gate_ops * float(logic_gate_fae)
+        trained_extended = trained_logic_fae + vote_acev2 + weighted_selection_fae
+        trained_cost = {
+            "clause_and_ops_trained_model": trained_and,
+            "patch_or_ops_trained_model": trained_or,
+            "boolean_gate_ops_trained_model": trained_gate_ops,
+            "boolean_logic_fae_trained_model": trained_logic_fae,
+            "extended_acev2_tm_trained_model": trained_extended,
+            "extended_acev2_tm_trained_model_million": trained_extended / 1e6,
+            "reduction_from_upper_bound": extended_upper - trained_extended,
+            "reduction_percent": (
+                100.0 * (extended_upper - trained_extended) / extended_upper
+                if extended_upper else 0.0
+            ),
+        }
+
+    preferred_cost = (
+        trained_cost["extended_acev2_tm_trained_model"]
+        if trained_cost else extended_upper
+    )
+    preferred_basis = (
+        "trained Clause include actions with all configured patches"
+        if trained_cost else "configured maximum included literals (upper bound)"
+    )
+    threshold_comparisons = height * width * int(boolean_channels)
+    argmax_comparisons = max(int(class_count) - 1, 0)
+
     return {
         "acev2": None,
-        "acev2_status": "not defined: ACEv2 covers arithmetic operations, not TM clause logic",
-        "logic_cost_kind": "worst-case upper bound; report separately from ACEv2",
+        "acev2_status": (
+            "standard ACEv2 total is not defined for TM Boolean logic; "
+            "tm_extended_acev2 is an explicit full-adder-equivalent extension"
+        ),
+        "method": "Extended ACEv2-TM (full-adder-equivalent)",
+        "tm_extended_acev2": preferred_cost,
+        "tm_extended_acev2_million": preferred_cost / 1e6,
+        "tm_extended_acev2_basis": preferred_basis,
+        "logic_gate_fae": float(logic_gate_fae),
         "patches_per_image": patches,
         "features_per_patch": features_per_patch,
         "available_literals_per_clause": available_literals,
@@ -132,14 +368,47 @@ def tsetlin_logic_cost(
         "clause_and_ops_upper_bound": clause_and,
         "patch_or_ops_upper_bound": patch_or,
         "vote_additions_per_image": vote_additions,
-        "logic_operations_upper_bound": input_negations + clause_and + patch_or,
+        "vote_acev2_subtotal": vote_acev2,
+        "weighted_selection_muxes": weighted_selection_muxes,
+        "weighted_selection_fae": weighted_selection_fae,
+        "logic_operations_upper_bound": boolean_gate_ops,
+        "boolean_logic_fae_upper_bound": boolean_logic_fae,
+        "extended_acev2_tm_upper_bound": extended_upper,
+        "extended_acev2_tm_upper_bound_million": extended_upper / 1e6,
+        "threshold_comparisons_reported_separately": threshold_comparisons,
+        "argmax_comparisons_reported_separately": argmax_comparisons,
         "weighted_clauses": bool(weighted_clauses),
-        "weighted_vote_cost_status": (
-            "not converted to ACEv2: learned clause-weight precision is not available in the checkpoint"
-            if weighted_clauses
-            else "unit clause votes"
-        ),
+        "accumulator_bits": int(accumulator_bits),
+        "weight_bits": int(weight_bits),
+        "memory_access_included": False,
+        **(trained_cost or {}),
     }
+
+
+def tsetlin_logic_cost(
+    image_shape: tuple[int, int],
+    boolean_channels: int,
+    patch_dim: tuple[int, int],
+    class_count: int,
+    clauses_per_class: int,
+    max_included_literals: int | None,
+    weighted_clauses: bool = True,
+) -> dict[str, Any]:
+    """Backward-compatible upper-bound wrapper for older callers."""
+    height, width = map(int, image_shape)
+    patch_height, patch_width = map(int, patch_dim)
+    available_literals = 2 * patch_height * patch_width * int(boolean_channels)
+    return calculate_tsetlin_extended_acev2(
+        image_shape=(height, width),
+        boolean_channels=boolean_channels,
+        patch_dim=(patch_height, patch_width),
+        class_count=class_count,
+        clauses_per_class=clauses_per_class,
+        max_included_literals=(
+            int(max_included_literals) if max_included_literals else available_literals
+        ),
+        weighted_clauses=weighted_clauses,
+    )
 
 
 def estimate_energy(cost: dict, coefficients: dict) -> dict:

@@ -57,6 +57,11 @@ evaluation:
   warmup_runs: 1
   timed_repeats: 5
   xnor_word_bits: 64
+  # Extended ACEv2-TM settings. Standard ACEv2 does not define Boolean-gate
+  # costs, so one 1-bit gate is explicitly approximated as 0.2 full adders.
+  tsetlin_logic_gate_fae: 0.2
+  tsetlin_accumulator_bits: 32
+  tsetlin_weight_bits: 32
   output_dir: artifacts/results
   # ACEv2 is a hardware-agnostic arithmetic-cost proxy, not joules.
   # Set ace_unit_pj only when a documented hardware calibration is available.
