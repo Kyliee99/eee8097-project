@@ -13,7 +13,10 @@ SUMMARY_FIELDS = [
     "weighted_f1", "inference_seconds_mean", "seconds_per_image",
     "throughput_images_per_second", "checkpoint_size_mb", "deployment_size_mb",
     "algorithmic_acev2", "python_tensor_acev2", "packed_xnor_word_ops",
-    "tm_logic_ops_upper_bound", "estimated_energy_pj", "energy_status", "cost_status",
+    "tm_extended_acev2", "tm_extended_acev2_basis",
+    "tm_extended_acev2_trained_model", "tm_extended_acev2_upper_bound",
+    "tm_logic_ops_upper_bound", "tm_clause_length_mean", "tm_patches_per_image",
+    "tm_all_patches_visited", "estimated_energy_pj", "energy_status", "cost_status",
 ]
 
 
@@ -21,6 +24,8 @@ def _summary_row(result: dict[str, Any]) -> dict[str, Any]:
     cost = result.get("cost", {})
     algorithmic = cost.get("algorithmic_acev2") or {}
     python_tensor = cost.get("python_tensor_acev2") or {}
+    clause_profile = cost.get("trained_clause_profile") or {}
+    patch_evaluation = cost.get("patch_evaluation") or {}
     return {
         "model": result.get("model"),
         "operation": result.get("operation"),
@@ -37,7 +42,14 @@ def _summary_row(result: dict[str, Any]) -> dict[str, Any]:
         "algorithmic_acev2": algorithmic.get("acev2"),
         "python_tensor_acev2": python_tensor.get("acev2"),
         "packed_xnor_word_ops": cost.get("packed_xnor_word_operations"),
+        "tm_extended_acev2": cost.get("tm_extended_acev2"),
+        "tm_extended_acev2_basis": cost.get("tm_extended_acev2_basis"),
+        "tm_extended_acev2_trained_model": cost.get("extended_acev2_tm_trained_model"),
+        "tm_extended_acev2_upper_bound": cost.get("extended_acev2_tm_upper_bound"),
         "tm_logic_ops_upper_bound": cost.get("logic_operations_upper_bound"),
+        "tm_clause_length_mean": clause_profile.get("included_literals_mean"),
+        "tm_patches_per_image": cost.get("patches_per_image"),
+        "tm_all_patches_visited": patch_evaluation.get("all_patches_visited"),
         "estimated_energy_pj": result.get("energy", {}).get("estimated_energy_pj"),
         "energy_status": result.get("energy", {}).get("energy_status"),
         "cost_status": cost.get("acev2_status"),
