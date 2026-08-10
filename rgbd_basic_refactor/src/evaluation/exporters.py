@@ -86,12 +86,23 @@ def export_results(payload: dict[str, Any], output_dir: str | Path) -> dict[str,
     workbook = Workbook()
     summary = workbook.active
     summary.title = "Summary"
-    summary.append(SUMMARY_FIELDS)
+
+    # Excel is intentionally transposed: models run across the first row and
+    # evaluation items run down the first column for direct model comparison.
+    summary.append(["model", *[row["model"] for row in rows]])
+    for field in SUMMARY_FIELDS:
+        if field != "model":
+            summary.append([field, *[row[field] for row in rows]])
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
     for cell in summary[1]:
         cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="1F4E78")
-    for row in rows:
-        summary.append([row[field] for field in SUMMARY_FIELDS])
+        cell.fill = header_fill
+    for cell in summary["A"]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = header_fill
+
+    summary.freeze_panes = "B2"
     for column in summary.columns:
         width = min(max(len(str(cell.value or "")) for cell in column) + 2, 45)
         summary.column_dimensions[column[0].column_letter].width = width
