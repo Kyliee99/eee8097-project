@@ -10,22 +10,32 @@ from typing import Any
 
 SUMMARY_FIELDS = [
     "model", "operation", "accuracy", "macro_precision", "macro_recall", "macro_f1",
-    "weighted_f1", "inference_seconds_mean", "seconds_per_image",
-    "throughput_images_per_second", "checkpoint_size_mb", "deployment_size_mb",
-    "algorithmic_acev2", "python_tensor_acev2", "packed_xnor_word_ops",
-    "tm_extended_acev2", "tm_extended_acev2_basis",
-    "tm_extended_acev2_trained_model", "tm_extended_acev2_upper_bound",
+    "weighted_f1", "acev2_theoretical", "acev2_actual",
+    "inference_seconds_mean", "seconds_per_image", "throughput_images_per_second",
+    "checkpoint_size_mb", "deployment_size_mb", "packed_xnor_word_ops",
     "tm_logic_ops_upper_bound", "tm_clause_length_mean", "tm_patches_per_image",
     "tm_all_patches_visited", "estimated_energy_pj", "energy_status", "cost_status",
 ]
 
 
-def _summary_row(result: dict[str, Any]) -> dict[str, Any]:
+def _acev2_values(result: dict[str, Any]) -> tuple[Any, Any]:
+    """Return comparable theoretical and actual ACEv2 values for one model."""
     cost = result.get("cost", {})
+    if result.get("model") == "tsetlin":
+        return (
+            cost.get("extended_acev2_tm_upper_bound"),
+            cost.get("extended_acev2_tm_trained_model"),
+        )
     algorithmic = cost.get("algorithmic_acev2") or {}
     python_tensor = cost.get("python_tensor_acev2") or {}
+    return algorithmic.get("acev2"), python_tensor.get("acev2")
+
+
+def _summary_row(result: dict[str, Any]) -> dict[str, Any]:
+    cost = result.get("cost", {})
     clause_profile = cost.get("trained_clause_profile") or {}
     patch_evaluation = cost.get("patch_evaluation") or {}
+    acev2_theoretical, acev2_actual = _acev2_values(result)
     return {
         "model": result.get("model"),
         "operation": result.get("operation"),
@@ -34,18 +44,14 @@ def _summary_row(result: dict[str, Any]) -> dict[str, Any]:
         "macro_recall": result.get("metrics", {}).get("macro_recall"),
         "macro_f1": result.get("metrics", {}).get("macro_f1"),
         "weighted_f1": result.get("metrics", {}).get("weighted_f1"),
+        "acev2_theoretical": acev2_theoretical,
+        "acev2_actual": acev2_actual,
         "inference_seconds_mean": result.get("timing", {}).get("inference_seconds_mean"),
         "seconds_per_image": result.get("timing", {}).get("seconds_per_image"),
         "throughput_images_per_second": result.get("timing", {}).get("throughput_images_per_second"),
         "checkpoint_size_mb": result.get("storage", {}).get("checkpoint_size_mb"),
         "deployment_size_mb": result.get("storage", {}).get("deployment_size_mb"),
-        "algorithmic_acev2": algorithmic.get("acev2"),
-        "python_tensor_acev2": python_tensor.get("acev2"),
         "packed_xnor_word_ops": cost.get("packed_xnor_word_operations"),
-        "tm_extended_acev2": cost.get("tm_extended_acev2"),
-        "tm_extended_acev2_basis": cost.get("tm_extended_acev2_basis"),
-        "tm_extended_acev2_trained_model": cost.get("extended_acev2_tm_trained_model"),
-        "tm_extended_acev2_upper_bound": cost.get("extended_acev2_tm_upper_bound"),
         "tm_logic_ops_upper_bound": cost.get("logic_operations_upper_bound"),
         "tm_clause_length_mean": clause_profile.get("included_literals_mean"),
         "tm_patches_per_image": cost.get("patches_per_image"),
