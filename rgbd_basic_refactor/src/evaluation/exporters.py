@@ -17,8 +17,17 @@ SUMMARY_FIELDS = [
     "tm_all_patches_visited", "estimated_energy_pj", "energy_status", "cost_status",
 ]
 
+# Keep detailed status and energy fields in CSV/JSON, but omit them from the
+# transposed workbook used for the main model comparison.
+EXCEL_OMITTED_FIELDS = {
+    "estimated_energy_pj",
+    "energy_status",
+    "cost_status",
+}
+EXCEL_FIELDS = [field for field in SUMMARY_FIELDS if field not in EXCEL_OMITTED_FIELDS]
 
-def _acev2_values(result: dict[str, Any]) -> tuple[Any, Any]:
+
+def acev2_values(result: dict[str, Any]) -> tuple[Any, Any]:
     """Return comparable theoretical and actual ACEv2 values for one model."""
     cost = result.get("cost", {})
     if result.get("model") == "tsetlin":
@@ -35,7 +44,7 @@ def _summary_row(result: dict[str, Any]) -> dict[str, Any]:
     cost = result.get("cost", {})
     clause_profile = cost.get("trained_clause_profile") or {}
     patch_evaluation = cost.get("patch_evaluation") or {}
-    acev2_theoretical, acev2_actual = _acev2_values(result)
+    acev2_theoretical, acev2_actual = acev2_values(result)
     return {
         "model": result.get("model"),
         "operation": result.get("operation"),
@@ -90,7 +99,7 @@ def export_results(payload: dict[str, Any], output_dir: str | Path) -> dict[str,
     # Excel is intentionally transposed: models run across the first row and
     # evaluation items run down the first column for direct model comparison.
     summary.append(["model", *[row["model"] for row in rows]])
-    for field in SUMMARY_FIELDS:
+    for field in EXCEL_FIELDS:
         if field != "model":
             summary.append([field, *[row[field] for row in rows]])
 

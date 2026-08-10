@@ -11,26 +11,38 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.config import load_config
+from src.evaluation.exporters import acev2_values
 from src.evaluation.runner import evaluate_models
 
 
-PRIMARY_METRICS = (
+PRIMARY_ITEMS = (
     "accuracy",
     "macro_precision",
     "macro_recall",
     "macro_f1",
     "weighted_f1",
+    "acev2_theoretical",
+    "acev2_actual",
 )
 
 
+def _primary_value(result: dict, item: str):
+    """Read one console item using the same ACEv2 mapping as the workbook."""
+    if item == "acev2_theoretical":
+        return acev2_values(result)[0]
+    if item == "acev2_actual":
+        return acev2_values(result)[1]
+    return (result.get("metrics") or {}).get(item)
+
+
 def _print_primary_metrics(payload: dict) -> None:
-    """Print the main classification metrics in a compact comparison table."""
+    """Print the main metrics and ACEv2 costs in a compact comparison table."""
     results = payload.get("results", [])
     if not results:
         return
 
     model_width = max(12, *(len(str(result.get("model", ""))) for result in results))
-    metric_width = max(len("test_item"), *(len(metric) for metric in PRIMARY_METRICS))
+    metric_width = max(len("test_item"), *(len(item) for item in PRIMARY_ITEMS))
     header = f"{'test_item':<{metric_width}}" + "".join(
         f"  {str(result.get('model', '')):>{model_width}}" for result in results
     )
@@ -39,13 +51,13 @@ def _print_primary_metrics(payload: dict) -> None:
     print("\nMain evaluation metrics")
     print(header)
     print(separator)
-    for metric in PRIMARY_METRICS:
+    for item in PRIMARY_ITEMS:
         values = []
         for result in results:
-            value = (result.get("metrics") or {}).get(metric)
+            value = _primary_value(result, item)
             displayed = "N/A" if value is None else f"{float(value):.6f}"
             values.append(f"  {displayed:>{model_width}}")
-        print(f"{metric:<{metric_width}}{''.join(values)}")
+        print(f"{item:<{metric_width}}{''.join(values)}")
 
 
 def main() -> None:
@@ -64,4 +76,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
